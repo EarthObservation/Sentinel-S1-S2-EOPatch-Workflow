@@ -1,3 +1,12 @@
+# specific project files
+input_files/list_of_bboxes.txt
+extent_of_tiles_by_index.txt
+sentinel_hub_config.py
+reports/
+eopatches/
+eopatches_S1/
+eopatches_S2/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
