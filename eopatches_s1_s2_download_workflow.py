@@ -248,34 +248,6 @@ class SentinelHubValidData:
         return np.logical_and(eopatch.mask[self.data_mask].astype(np.bool),  # 'IS_DATA'
                               np.logical_not(eopatch.mask[self.cloud_mask].astype(np.bool)))   # 'CLM' or 'CLM_10m'
 
-# # define EOTask for adding valid data mask
-# class SentinelHubValidData(EOTask):
-#     """EOTask for adding custom mask array used to filter reflectances data
-#     This task allows the user to specify the criteria used to generate a valid data mask, which can be used to
-#     filter the data stored in the `FeatureType.DATA`
-#     """
-#
-#     def __init__(self, predicate, valid_data_feature=(FeatureType.MASK, "VALID_DATA")):
-#         """Constructor of the class requires a predicate defining the function used to generate the valid data mask. A
-#         predicate is a function that returns the truth value of some condition.
-#         An example predicate could be an `and` operator between a cloud mask and a snow mask.
-#         :param predicate: Function used to generate a `valid_data` mask
-#         :type predicate: func
-#         :param valid_data_feature: Feature which will store valid data mask
-#         :type valid_data_feature: str
-#         """
-#         self.predicate = predicate
-#         self.valid_data_feature = self.parse_feature(valid_data_feature)
-#
-#     def execute(self, eopatch):
-#         """Execute predicate on input eopatch
-#         :param eopatch: Input `eopatch` instance
-#         :return: The same `eopatch` instance with a `mask.valid_data` array computed according to the predicate
-#         """
-#         feature_type, feature_name = next(self.valid_data_feature())
-#         eopatch[feature_type][feature_name] = self.predicate(eopatch)
-#         return eopatch
-
 class AddValidDataMaskTask(EOTask):
     """EOTask for adding custom mask array used to filter reflectances data
     This task allows the user to specify the criteria used to generate a valid data mask, which can be used to
@@ -407,8 +379,8 @@ if __name__ == '__main__':
     """
 
     evalscript = """
-        //VERSION=3
-    
+    //VERSION=3
+
     function setup() {
         return {
             input: [{
@@ -419,25 +391,24 @@ if __name__ == '__main__':
             ]
         }
     }
-    
+
     function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
         outputMetadata.userData = { "norm_factor":  inputMetadata.normalizationFactor }
     }
-    
-    
+
     // apply "toDb" function on input bands
-    function evaluatePixel(samples) {
+     function evaluatePixel(samples) {
       var VVdB = toDb(samples.VV)
       var VHdB = toDb(samples.VH)
       return [VVdB, VHdB]
     }
-    
+
     // definition of "toDb" function
     function toDb(linear) {
       var log = 10 * Math.log(linear) / Math.LN10   // VV and VH linear to decibels
       var val = Math.max(Math.min(log, 5), -30) 
       return val
-    } 
+    }    
     """
 
     # separate requests for S1 ascending and descending orbits
@@ -531,47 +502,11 @@ if __name__ == '__main__':
             node2: {'bbox': BBox(bbox_coords, crs=crs)},
             node6: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
             node9: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
-            node5: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}, #, 'bbox': BBox(bbox_coords, crs=crs)},
-            node8: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}, #, 'bbox': BBox(bbox_coords, crs=crs)},
-            node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}, #, 'bbox': BBox(bbox_coords, crs=crs)},
-            node14: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}, #, 'bbox': BBox(bbox_coords, crs=crs)},
+            node5: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
+            node8: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
+            node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
+            node14: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
         })
-
-        '''
-            create_eopatch: {'timestamp': list_of_dates},  # add dates to eopatch; request will be sent for these dates
-            add_S2_data: {'bbox': BBox(bbox_coords, crs=crs)},
-            add_S1_ASC_data: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
-            add_S1_DES_data: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
-            save_S2: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            save_S1_ASC: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            save_S1_DES: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            save_S1_S2: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}'''
-
-    ''' Solution from ARSET23 '''
-    """
-
-    # Create a splitter to obtain a list of bboxes with 5km sides
-    bbox_splitter = UtmZoneSplitter([country_shape], country.crs, 5000)
-
-    bbox_list = np.array(bbox_splitter.get_bbox_list())
-    info_list = np.array(bbox_splitter.get_info_list())
-
-    # Time interval for the SH request
-    time_interval = ["2019-01-01", "2019-12-31"]
-
-    # Define additional parameters of the workflow
-    input_node = workflow_nodes[0]
-    save_node = workflow_nodes[-1]
-    execution_args = []
-    for idx, bbox in list_of_bboxes:
-        execution_args.append(
-            {
-                input_node: {"bbox": bbox, "time_interval": time_interval},
-                save_node: {"eopatch_folder": f"eopatch_{idx}"},
-            }
-        )
-    ''' end of SOLUTION'''
-    """
 
     # TODO: SHDeprecationWarning: The string representation of `BBox` will change to match its `repr` representation value = format % v
     print('Now creating {} EOPatches...\n'.format(len(list_of_bboxes)))
