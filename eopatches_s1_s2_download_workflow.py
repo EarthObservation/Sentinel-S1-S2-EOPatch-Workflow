@@ -40,7 +40,7 @@ import numpy as np
 
 from eolearn.core import EOWorkflow, FeatureType, OverwritePermission, EOTask, SaveTask, \
     EOExecutor, CreateEOPatchTask, MoveFeatureTask, EONode, linearly_connect_tasks
-from eolearn.io import SentinelHubInputTask
+from eolearn.io import SentinelHubInputTask, SentinelHubEvalscriptTask
 from eolearn.mask import CloudMaskTask
 from sentinelhub import BBox, CRS, DataCollection, SHConfig
 import datetime
@@ -88,7 +88,9 @@ data_collection_S2 = DataCollection.SENTINEL2_L2A
 res = 10  # resolution of EOPatches in meters
 
 # S1 processing parameters
-time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
+#TODO: Temporarily limit time interval to shorter period -> change back!
+time_interval = ['2017-01-01', '2017-01-31']
+#time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
 S1_stats = ['mean', 'median', 'std', 'var', 'percentile']  # statistics to calculate;
 # options are ['mean', 'median', 'std', 'var', 'percentile']
 percentiles = [5, 95]  # if you included 'percentile' is S1_stats, enter which percentiles to calculate
@@ -210,7 +212,7 @@ class MapFeatureYearlyTask(EOTask):
 
                 # add period suffix to feature name
                 output_feature_l = list(output_feature)
-                output_feature_l[1] = '{}{}-{}'.format(output_feature_l[1], yrs_uniq[0], yrs_uniq[-1])
+                output_feature_l[1] = '{}{}-{}'.format(output_feature_l[0], yrs_uniq[0], yrs_uniq[-1])
                 output_feature_id = tuple(output_feature_l)
 
                 # pass function to input feature
@@ -331,12 +333,12 @@ if __name__ == '__main__':
 
     # calculate your own cloud mask
     S2_custom_CLM = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS_S2'),
-                                          all_bands=False,  # all 13 bands or only the required 10
-                                          processing_resolution=clm_res,
-                                          mono_features=(None, 'CLM_{}m'.format(clm_res)),  # names of output features
-                                          mask_feature=None,
-                                          average_over=clm_average_over,
-                                          dilation_size=clm_dilation_size)
+                                  all_bands=False,  # all 13 bands or only the required 10
+                                  processing_resolution=clm_res,
+                                  mono_features=(None, 'CLM_{}m'.format(clm_res)),  # names of output features
+                                  mask_feature=None,
+                                  average_over=clm_average_over,
+                                  dilation_size=clm_dilation_size)
 
     add_clm = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS'),
                             all_bands=True,
@@ -411,24 +413,50 @@ if __name__ == '__main__':
     }    
     """
 
-    # separate requests for S1 ascending and descending orbits
-    add_S1_ASC_data = SentinelHubInputTask(evalscript=evalscript,
-                                           data_collection=data_collection_S1_ASC,
-                                           bands_feature=(FeatureType.DATA, 'BANDS_S1'),  # two bands inside: VV, VH
-                                           resolution=res,
-                                           time_difference=datetime.timedelta(minutes=120),
-                                           config=config,
-                                           aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
-                                           )
+    # S1 ASC data:
 
-    add_S1_DES_data = SentinelHubInputTask(evalscript=evalscript,
-                                           data_collection=data_collection_S1_DES,
-                                           bands_feature=(FeatureType.DATA, 'BANDS_S1'),
-                                           resolution=res,
-                                           time_difference=datetime.timedelta(minutes=120),
-                                           config=config,
-                                           aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
-                                           )
+    # separate requests for S1 ascending and descending orbits
+    # add_S1_ASC_data = SentinelHubInputTask(evalscript=evalscript,
+    #                                        data_collection=data_collection_S1_ASC,
+    #                                        bands_feature=(FeatureType.DATA, 'BANDS_S1'),  # two bands inside: VV, VH
+    #                                        resolution=res,
+    #                                        time_difference=datetime.timedelta(minutes=120),
+    #                                        config=config,
+    #                                        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
+    #                                        )
+
+    add_S1_ASC_data = SentinelHubEvalscriptTask(
+        evalscript=evalscript,
+        data_collection=DataCollection.SENTINEL1_IW_ASC,
+        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        resolution=res,
+        time_difference=datetime.timedelta(minutes=120),
+        config=config,
+        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
+    )
+
+    # S1 DES data:
+
+    # add_S1_DES_data = SentinelHubInputTask(evalscript=evalscript,
+    #                                        data_collection=data_collection_S1_DES,
+    #                                        bands_feature=(FeatureType.DATA, 'BANDS_S1'),
+    #                                        resolution=res,
+    #                                        time_difference=datetime.timedelta(minutes=120),
+    #                                        config=config,
+    #                                        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
+    #                                        )
+
+    add_S1_DES_data = SentinelHubEvalscriptTask(
+        evalscript=evalscript,
+        data_collection=DataCollection.SENTINEL1_IW_DES,
+        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        resolution=res,
+        time_difference=datetime.timedelta(minutes=120),
+        config=config,
+        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
+    )
+
+
 
     # create output_features for MapFeatureYearlyTask
     output_ASC_features = []
@@ -511,7 +539,7 @@ if __name__ == '__main__':
     # TODO: SHDeprecationWarning: The string representation of `BBox` will change to match its `repr` representation value = format % v
     print('Now creating {} EOPatches...\n'.format(len(list_of_bboxes)))
     executor = EOExecutor(workflow, execution_args, save_logs=True, logs_folder=reports_folder)
-    executor.run(workers=10, multiprocess=False)
+    executor.run(workers=1, multiprocess=False)
     executor.make_report()
 
     print(f"Report was saved to location: {executor.get_report_path()}")
