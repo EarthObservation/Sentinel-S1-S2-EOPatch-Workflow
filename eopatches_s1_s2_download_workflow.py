@@ -26,11 +26,11 @@
 # Add S1 data (statistics) to S2 EOPatches and save updated EOPatches to separate location on disk.
 #
 # A. Draksler, nov. 2020
-# M. somrak, apr. 2023
-
+# M. Somrak, apr. 2023
 
 import os
 import numpy as np
+import itertools
 
 # TODO: is deprecated; to replace
 # EODeprecationWarning: The `FeatureTypeSet` collections are deprecated.
@@ -46,91 +46,334 @@ from sentinelhub import BBox, CRS, DataCollection, SHConfig
 import datetime
 # import warnings
 
+global add_S1_ASC_data
+global add_S1_DES_data
+global stats_ASC
+global stats_DES
+global save_S1_ASC
+global save_S1_DES
+
+global list_of_dates
+global add_S2_data
+global S2_custom_CLM
+global add_clm
+global valid_mask
+global save_S2
+
+global move_S1_ASC_to_S2
+global move_S1_DES_to_S2
+global save_S1_S2
+
+
+
+global eopatches_S2_folder
+global eopatches_S1_ASC_folder
+global eopatches_S1_DES_folder
+global eopatches_folder
+global reports_folder
+
+
 '''
 ==================================================================================
 Configuration and processing parameters
 ==================================================================================
 '''
-# Set INSTANCE_ID from configuration in SentinelHub account
-INSTANCE_ID = ''  # SH configuration: AD-AiTLAS-config, string parameter
-CLIENT_ID = ''  # if already in SH config file (config.json) ($ sentinelhub.config --show), leave it as is
-CLIENT_SECRET = ''  # if already in SH config file (config.json) ($ sentinelhub.config --show), leave it as is
 
-# Can also be set using:
-# $sentinelhub.config --instance_id "$INSTANCE_ID" --sh_client_id "$CLIENT_ID" --sh_client_secret "$CLIENT_SECRET"
-# or
-# $ sentinelhub.config --profile my-profile --instance_id my-instance-id
-# Confirm the values have been set:
-# $sentinelhub.config --show
+def parse_variables_from_txt(credentials_file, variables_list):
+    # Read from file if it exist, otherwise set manually
+    with open(credentials_file, 'r') as file:
+        for line in file:
+            name, value = line.split('=')
+            name = name.strip()
+            value = value.strip().strip("'")
 
-if INSTANCE_ID and CLIENT_ID and CLIENT_SECRET:
+            if name in variables_list:
+                globals()[name] = value
+
+def sentinel_hub_config(credentials_file) -> SHConfig():
+    """ SentinelHub set configuration from credentials file """
     config = SHConfig()
+
+    credentials_list = ['INSTANCE_ID', 'CLIENT_ID', 'CLIENT_SECRET']
+    parse_variables_from_txt(credentials_file, credentials_list)
+
     config.instance_id = INSTANCE_ID
-    config.sh_client_id = CLIENT_ID               # use only if you changed variable CLIENT_ID
-    config.sh_client_secret = CLIENT_SECRET       # use only if you changed variable CLIENT_SECRET
-else:
-    config = None
+    config.sh_client_id = CLIENT_ID
+    config.sh_client_secret = CLIENT_SECRET
 
-# CRS for Maya sites in Chactun: EPSG:32616 - WGS 84 / UTM zone 16N
-# CRS of bboxes
-crs = CRS.UTM_16N  # define CRS
-
-# input files
-S2_cloudless_dates = True  # have you pre-selected cloudless dates with Sentinel-2 images for your area? If not, False
-S2_cloudless_dates_file = './input_files/valid_dates_S2.txt'  # file with list of S-2 cloudless dates (optional)
-bboxes_file = './input_files/list_of_bboxes.txt'  # file with bounding boxes
-
-# data collections from Sentinel Hub
-data_collection_S1_ASC = DataCollection.SENTINEL1_IW_ASC
-data_collection_S1_DES = DataCollection.SENTINEL1_IW_DES
-data_collection_S2 = DataCollection.SENTINEL2_L2A
-
-res = 10  # resolution of EOPatches in meters
-
-# S1 processing parameters
-#TODO: Temporarily limit time interval to shorter period -> change back!
-time_interval = ['2017-01-01', '2017-01-31']
-#time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
-S1_stats = ['mean', 'median', 'std', 'var', 'percentile']  # statistics to calculate;
-# options are ['mean', 'median', 'std', 'var', 'percentile']
-percentiles = [5, 95]  # if you included 'percentile' is S1_stats, enter which percentiles to calculate
-
-# S2 processing parameters
-selected_max_cc = 0.8  # maximum cloud cover on requested S2 data
-S2_band_names = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12']
-
-# Use Sentinel Hub's default cloud mask (res. 160m) or calculate your own cloud mask?
-calculate_S2_custom_CLM = True  # If True, additional cloud mask (CLM) will be calculated. If False, Sentinel Hub CLM is used
-
-# S2 cloud mask calculation parameters (Only used if calculate_S2_custom_CLM = True)
-clm_res = 10  # resolution for cloud mask calculation in meters
-clm_average_over = 22  # recommended value for 10m res. Size of the pixel neighbourhood used
-# in the averaging post-processing step.
-clm_dilation_size = 11  # recommended value for 10m res. Size of the dilation post-processing step.
+    print("Instance ID: " + config.instance_id)
+    return config
 
 
-# output locations
-eopatches_S2_folder = './eopatches_S2/'
-eopatches_S1_ASC_folder = './eopatches_S1/ASC/'
-eopatches_S1_DES_folder = './eopatches_S1/DES/'
-eopatches_folder = './eopatches/'
-reports_folder = './reports/'
-
-out_folders = (eopatches_S2_folder,
+'''
+==================================================================================
+Processing parameters
+==================================================================================
+'''
+def process_S1(res,
+               config,
                eopatches_S1_ASC_folder,
                eopatches_S1_DES_folder,
-               eopatches_folder,
-               reports_folder)
-for f in out_folders:
-    if not os.path.isdir(f):
-        os.makedirs(f)
+               time_interval,
+               S1_stats=['mean', 'median', 'std', 'var', 'percentile'],  # statistics to calculate;
+               # options are ['mean', 'median', 'std', 'var', 'percentile'],
+               percentiles = [5, 95] # if you included 'percentile' is S1_stats, enter which percentiles to calculate
+               ):
+    """
+    Process Sentinel 1 data
+    """
+
+    # request for S1 data
+    """
+    NOTE:
+    We request Sentinel-1 data through SentinelHubEvalscriptTask with the following parameters:
+        - Product type: level-1 GRD
+        - Acquisition mode: IW
+        - Resolution: high
+        - Polarization: dual, VV+VH
+        - Orbit direction: ascending, descending
+        - Backscatter coefficient: Sigma0
+    Values (linear power) of backscatter coefficient are converted to decibels (to get better distribution),
+    then values are fitted to [-30, 5] dB interval (<-30 to -30 dB, >5 to 5 dB) and normalized to [0,1] interval.
+    Interval [-30,5] dB is used because vast majority of values lies within in fact, >95% are smaller than 0 dB. Some 
+    artificial surfaces and volumes can have extremely high values, above 5 dB. 
+    More info:
+    https://forum.step.esa.int/t/classification-sentinel-1-problems-with-maxver/12627/2
+    https://docs.sentinel-hub.com/api/latest/data/sentinel-1-grd/#units
+    """
+
+    evalscript = """
+        //VERSION=3
+    
+        function setup() {
+            return {
+                input: [{
+                    bands: ["VV", "VH"]
+                }],
+                output: [
+                    { id:"custom", bands:2, sampleType: SampleType.FLOAT32 }
+                ]
+            }
+        }
+    
+        function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
+            outputMetadata.userData = { "norm_factor":  inputMetadata.normalizationFactor }
+        }
+    
+        // apply "toDb" function on input bands
+         function evaluatePixel(samples) {
+          var VVdB = toDb(samples.VV)
+          var VHdB = toDb(samples.VH)
+          return [VVdB, VHdB]
+        }
+    
+        // definition of "toDb" function
+        function toDb(linear) {
+          var log = 10 * Math.log(linear) / Math.LN10   // VV and VH linear to decibels
+          var val = Math.max(Math.min(log, 5), -30) 
+          return val
+        }    
+        """
+
+    # TODO: Check "the features you provide in the task should correspond with
+    #             the features defined in the output of the evalscript"
+
+    global add_S1_ASC_data
+    global add_S1_DES_data
+    global stats_ASC
+    global stats_DES
+    global save_S1_ASC
+    global save_S1_DES
+
+    # S1 ASC data:
+
+    add_S1_ASC_data = SentinelHubEvalscriptTask(
+        evalscript=evalscript,
+        data_collection=DataCollection.SENTINEL1_IW_ASC,
+        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        resolution=res,
+        time_difference=datetime.timedelta(minutes=120),
+        config=config,
+        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
+    )
+
+    # S1 DES data:
+
+    add_S1_DES_data = SentinelHubEvalscriptTask(
+        evalscript=evalscript,
+        data_collection=DataCollection.SENTINEL1_IW_DES,
+        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        resolution=res,
+        time_difference=datetime.timedelta(minutes=120),
+        config=config,
+        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
+    )
+
+    # create output_features for MapFeatureYearlyTask
+    output_ASC_features = []
+    output_DES_features = []
+    S1_stats.sort(key='percentile'.__eq__)
+    for s in S1_stats:
+        if s == 'percentile':
+            s = 'p'
+            for p in percentiles:
+                output_ASC_features.append((FeatureType.DATA_TIMELESS, 'S1_ASC_{}{}_'.format(s, p)))
+                output_DES_features.append((FeatureType.DATA_TIMELESS, 'S1_DES_{}{}_'.format(s, p)))
+        else:
+            output_ASC_features.append((FeatureType.DATA_TIMELESS, 'S1_ASC_{}_'.format(s)))
+            output_DES_features.append((FeatureType.DATA_TIMELESS, 'S1_DES_{}_'.format(s)))
+
+    # calculation of statistics for VV and VH bands (ASC and DES)
+    stats_ASC = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
+                                     output_features=output_ASC_features,
+                                     map_functions=S1_stats,
+                                     percentiles=percentiles,
+                                     axis=0)
+    stats_DES = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
+                                     output_features=output_DES_features,
+                                     map_functions=S1_stats,
+                                     percentiles=percentiles,
+                                     axis=0)
+
+    # save S1 EOPatch
+    save_S1_ASC = SaveTask(eopatches_S1_ASC_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    save_S1_DES = SaveTask(eopatches_S1_DES_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+
+def process_S2(res, # resolution
+               S2_cloudless_dates_file,
+               eopatches_S2_folder, # output folder
+               S2_cloudless_dates=True, # have you pre-selected cloudless dates with Sentinel-2 images for your area? If not, False
+               selected_max_cc=0.8,  # maximum cloud cover on requested S2 data,
+               #S2_band_names=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12'],
+               S2_band_names='B01',
+               calculate_S2_custom_CLM=True,  # If True, additional cloud mask (CLM) will be calculated. If False, Sentinel Hub CLM is used
+               # S2 cloud mask calculation parameters (Only used if calculate_S2_custom_CLM = True)
+               clm_res=10, # resolution for cloud mask calculation in meters
+               clm_average_over=22, # recommended value for 10m res. Size of the pixel neighbourhood used
+               # in the averaging post-processing step.
+               clm_dilation_size=11  # recommended value for 10m res. Size of the dilation post-processing step.
+               ):
+    """
+    Process Sentinel 2 data
+    """
+
+    global add_S2_data
+    global S2_custom_CLM
+    global add_clm
+    global valid_mask
+    global save_S2
+    global list_of_dates
+
+    data_collection_S2 = DataCollection.SENTINEL2_L2A
+
+    # import dates for S2 imagery
+    list_of_dates = []
+    with open(S2_cloudless_dates_file, mode='r') as infile_dates:
+        for line in infile_dates.read().splitlines():
+            current_date = datetime.datetime.strptime(line, "%Y-%m-%d")
+            list_of_dates.append(current_date)
+    list_of_dates.sort()
+
+    # request for S2 data (bands + cloud masks)
+    add_S2_data = SentinelHubInputTask(
+        bands_feature=(FeatureType.DATA, 'BANDS_S2'),
+        bands=S2_band_names,
+        resolution=res,
+        maxcc=selected_max_cc,
+        data_collection=data_collection_S2,
+        time_difference=datetime.timedelta(minutes=120),
+        additional_data=[(FeatureType.MASK, 'CLM'),  # SH cloud mask (res. 160m)
+                         (FeatureType.MASK, 'dataMask', 'IS_DATA')],
+        config=config)
+
+    # calculate your own cloud mask
+    S2_custom_CLM = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS_S2'),
+                                  all_bands=False,  # all 13 bands or only the required 10
+                                  processing_resolution=clm_res,
+                                  mono_features=(None, 'CLM_{}m'.format(clm_res)),  # names of output features
+                                  mask_feature=None,
+                                  average_over=clm_average_over,
+                                  dilation_size=clm_dilation_size)
+
+    add_clm = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS'),
+                            all_bands=True,
+                            processing_resolution=160,
+                            mono_features=('CLP', 'CLM'),
+                            mask_feature=None,
+                            average_over=16,
+                            dilation_size=8)
+
+
+    # -----ORIGINAL-----
+    # add "valid data" feature
+    CLM = 'CLM_{}m'.format(clm_res) if calculate_S2_custom_CLM else 'CLM'
+    # VALIDITY MASK
+    # Validate pixels using SentinelHub's cloud detection mask and region of acquisition??
+    # Before it was AddValidDataMaskTask, then was renamed to SentinelHubValidDataTask
+    valid_mask = AddValidDataMaskTask(SentinelHubValidData(data_mask='IS_DATA',  # name of 'dataMask' feature
+                                                           cloud_mask=CLM),  # name of 'cloud mask' feature
+                                      valid_data_feature=(FeatureType.MASK, 'IS_VALID'))  # name of output mask
+
+    # save S2 EOPatch
+    save_S2 = SaveTask(eopatches_S2_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+
+def merge_S1_S2():
+    global move_S1_ASC_to_S2
+    global move_S1_DES_to_S2
+    global save_S1_S2
+
+    # move S1 statistics to S2 EOPatch
+    move_S1_ASC_to_S2 = MoveFeatureTask(FeatureType.DATA_TIMELESS)
+    move_S1_DES_to_S2 = MoveFeatureTask(FeatureType.DATA_TIMELESS)
+
+    # save updated EOPatch with S2 and S1 data
+    save_S1_S2 = SaveTask(path=eopatches_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+
+def set_output_locations(output_locations_file):
+    global eopatches_S2_folder
+    global eopatches_S1_ASC_folder
+    global eopatches_S1_DES_folder
+    global eopatches_folder
+    global reports_folder
+
+    credentials_list = ['eopatches_S2_folder',
+                        'eopatches_S1_ASC_folder',
+                        'eopatches_S1_DES_folder',
+                        'eopatches_folder',
+                        'reports_folder']
+
+    parse_variables_from_txt(output_locations_file, credentials_list)
+
+    out_folders = (eopatches_S2_folder,
+                   eopatches_S1_ASC_folder,
+                   eopatches_S1_DES_folder,
+                   eopatches_folder,
+                   reports_folder)
+
+    for f in out_folders:
+        if not os.path.isdir(f):
+            os.makedirs(f)
+
+def execute_workflow(workflow, execution_args, reports_folder):
+    # TODO: SHDeprecationWarning: The string representation of `BBox` will change to match its `repr` representation value = format % v
+    print('Now creating {} EOPatches...\n'.format(len(list_of_bboxes)))
+    executor = EOExecutor(workflow, execution_args, save_logs=True, logs_folder=reports_folder)
+    executor.run(workers=1, multiprocess=False)
+    executor.make_report()
+
+    print(f"Report was saved to location: {executor.get_report_path()}")
+
+# Python code to merge dict using a single
+# expression
+def Merge(dict1, dict2):
+    res = {**dict1, **dict2}
+    return res
 
 '''
 ==================================================================================
 Define custom EOTasks
 ==================================================================================
 '''
-
 
 # define EOTask for S1 yearly means
 class MapFeatureYearlyTask(EOTask):
@@ -198,7 +441,7 @@ class MapFeatureYearlyTask(EOTask):
         """
 
         # Extract indexes of first and last timestamp for every year.
-        yrs_list = [getattr(i, self.agg) for i in eopatch.timestamp]  # get year from datetime.datetime objects
+        yrs_list = [getattr(i, self.agg) for i in eopatch.timestamps]  # get year from datetime.datetime objects
         yrs_uniq = list(set(yrs_list))  # get unique values of years
         yrs_uniq.sort()
         yrs_start_end = []
@@ -278,6 +521,7 @@ class AddValidDataMaskTask(EOTask):
         eopatch[feature_type][feature_name] = self.predicate(eopatch)
         return eopatch
 
+
 '''
 ==================================================================================
 Main program - data requests, processing and saving
@@ -287,13 +531,13 @@ if __name__ == '__main__':
     # start the clock
     time_start = datetime.datetime.now()
 
-    # import dates for S2 imagery
-    list_of_dates = []
-    with open(S2_cloudless_dates_file, mode='r') as infile_dates:
-        for line in infile_dates.read().splitlines():
-            current_date = datetime.datetime.strptime(line, "%Y-%m-%d")
-            list_of_dates.append(current_date)
-    list_of_dates.sort()
+    S2_cloudless_dates_file = './input_files/valid_dates_S2.txt'  # file with list of S-2 cloudless dates (optional)
+    bboxes_file = './input_files/list_of_bboxes.txt'  # file with bounding boxes
+
+    credentials_file = "./user_credentials.txt"
+    config = sentinel_hub_config(credentials_file)
+    output_locations_file = "./set_output_folders.txt"
+    set_output_locations(output_locations_file)
 
     list_of_bboxes = []
     with open(bboxes_file, mode='r') as infile_bboxes:
@@ -313,187 +557,29 @@ if __name__ == '__main__':
     ===============================================================
     """
 
-    # create empty EOPatch
-    # TODO: deprecation warning: need to init all EOPatches with bboxes
-    create_eopatch = CreateEOPatchTask()
+    # parameters
+    crs = CRS.UTM_16N  # CRS of bboxes - for Maya sites in Chactun: EPSG:32616 - WGS 84 / UTM zone 16N
+    res = 10  # resolution of EOPatches in meters
 
-    # request for S2 data (bands + cloud masks)
-    add_S2_data = SentinelHubInputTask(
-        bands_feature=(FeatureType.DATA, 'BANDS_S2'),
-        bands=S2_band_names,
-        resolution=res,
-        maxcc=selected_max_cc,
-        data_collection=data_collection_S2,
-        time_difference=datetime.timedelta(minutes=120),
-        additional_data=[(FeatureType.MASK, 'CLM'),  # SH cloud mask (res. 160m)
-                         (FeatureType.MASK, 'dataMask', 'IS_DATA')],
+    sentinel1 = False
+    sentinel2 = True
 
-        config=config
-    )
+    # request for Sentinel 2 data
+    if sentinel2:
+        process_S2(res, S2_cloudless_dates_file, eopatches_S2_folder)
 
-    # calculate your own cloud mask
-    S2_custom_CLM = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS_S2'),
-                                  all_bands=False,  # all 13 bands or only the required 10
-                                  processing_resolution=clm_res,
-                                  mono_features=(None, 'CLM_{}m'.format(clm_res)),  # names of output features
-                                  mask_feature=None,
-                                  average_over=clm_average_over,
-                                  dilation_size=clm_dilation_size)
+    # request for Sentinel) 1 data
+    if sentinel1:
+        # S1 processing parameters
+        # TODO: Temporarily limit time interval to shorter period -> change back!
+        time_interval = ['2017-01-01', '2017-01-31']
+        # time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
+        process_S1(res, config, eopatches_S1_ASC_folder, eopatches_S1_DES_folder, time_interval)
 
-    add_clm = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS'),
-                            all_bands=True,
-                            processing_resolution=160,
-                            mono_features=('CLP', 'CLM'),
-                            mask_feature=None,
-                            average_over=16,
-                            dilation_size=8)
+    #
+    if sentinel1 and sentinel2:
+        merge_S1_S2()
 
-    #-----ORIGINAL-----
-    # add "valid data" feature
-    CLM = 'CLM_{}m'.format(clm_res) if calculate_S2_custom_CLM else 'CLM'
-    # VALIDITY MASK
-    # Validate pixels using SentinelHub's cloud detection mask and region of acquisition??
-    # Before it was AddValidDataMaskTask, then was renamed to SentinelHubValidDataTask
-    valid_mask = AddValidDataMaskTask(SentinelHubValidData(data_mask='IS_DATA',  # name of 'dataMask' feature
-                                                           cloud_mask=CLM),  # name of 'cloud mask' feature
-                                                           valid_data_feature=(FeatureType.MASK,'IS_VALID'))  # name of output mask
-
-    # save S2 EOPatch
-    save_S2 = SaveTask(eopatches_S2_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
-    
-    # request for S1 data
-    """
-    NOTE:
-    We request Sentinel-1 data through SentinelHubInputTask with the following parameters:
-        - Product type: level-1 GRD
-        - Acquisition mode: IW
-        - Resolution: high
-        - Polarization: dual, VV+VH
-        - Orbit direction: ascending, descending
-        - Backscatter coefficient: Sigma0
-    Values (linear power) of backscatter coefficient are converted to decibels (to get better distribution),
-    then values are fitted to [-30, 5] dB interval (<-30 to -30 dB, >5 to 5 dB) and normalized to [0,1] interval.
-    Interval [-30,5] dB is used because vast majority of values lies within in fact, >95% are smaller than 0 dB. Some 
-    artificial surfaces and volumes can have extremely high values, above 5 dB. 
-    More info:
-    https://forum.step.esa.int/t/classification-sentinel-1-problems-with-maxver/12627/2
-    https://docs.sentinel-hub.com/api/latest/data/sentinel-1-grd/#units
-    """
-
-    evalscript = """
-    //VERSION=3
-
-    function setup() {
-        return {
-            input: [{
-                bands: ["VV", "VH"]
-            }],
-            output: [
-                { id:"custom", bands:2, sampleType: SampleType.FLOAT32 }
-            ]
-        }
-    }
-
-    function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
-        outputMetadata.userData = { "norm_factor":  inputMetadata.normalizationFactor }
-    }
-
-    // apply "toDb" function on input bands
-     function evaluatePixel(samples) {
-      var VVdB = toDb(samples.VV)
-      var VHdB = toDb(samples.VH)
-      return [VVdB, VHdB]
-    }
-
-    // definition of "toDb" function
-    function toDb(linear) {
-      var log = 10 * Math.log(linear) / Math.LN10   // VV and VH linear to decibels
-      var val = Math.max(Math.min(log, 5), -30) 
-      return val
-    }    
-    """
-
-    # S1 ASC data:
-
-    # separate requests for S1 ascending and descending orbits
-    # add_S1_ASC_data = SentinelHubInputTask(evalscript=evalscript,
-    #                                        data_collection=data_collection_S1_ASC,
-    #                                        bands_feature=(FeatureType.DATA, 'BANDS_S1'),  # two bands inside: VV, VH
-    #                                        resolution=res,
-    #                                        time_difference=datetime.timedelta(minutes=120),
-    #                                        config=config,
-    #                                        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
-    #                                        )
-
-    add_S1_ASC_data = SentinelHubEvalscriptTask(
-        evalscript=evalscript,
-        data_collection=DataCollection.SENTINEL1_IW_ASC,
-        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
-        resolution=res,
-        time_difference=datetime.timedelta(minutes=120),
-        config=config,
-        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
-    )
-
-    # S1 DES data:
-
-    # add_S1_DES_data = SentinelHubInputTask(evalscript=evalscript,
-    #                                        data_collection=data_collection_S1_DES,
-    #                                        bands_feature=(FeatureType.DATA, 'BANDS_S1'),
-    #                                        resolution=res,
-    #                                        time_difference=datetime.timedelta(minutes=120),
-    #                                        config=config,
-    #                                        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}}
-    #                                        )
-
-    add_S1_DES_data = SentinelHubEvalscriptTask(
-        evalscript=evalscript,
-        data_collection=DataCollection.SENTINEL1_IW_DES,
-        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
-        resolution=res,
-        time_difference=datetime.timedelta(minutes=120),
-        config=config,
-        aux_request_args={"processing": {"backCoeff": "SIGMA0_ELLIPSOID"}},
-    )
-
-
-
-    # create output_features for MapFeatureYearlyTask
-    output_ASC_features = []
-    output_DES_features = []
-    S1_stats.sort(key='percentile'.__eq__)
-    for s in S1_stats:
-        if s == 'percentile':
-            s = 'p'
-            for p in percentiles:
-                output_ASC_features.append((FeatureType.DATA_TIMELESS, 'S1_ASC_{}{}_'.format(s, p)))
-                output_DES_features.append((FeatureType.DATA_TIMELESS, 'S1_DES_{}{}_'.format(s, p)))
-        else:
-            output_ASC_features.append((FeatureType.DATA_TIMELESS, 'S1_ASC_{}_'.format(s)))
-            output_DES_features.append((FeatureType.DATA_TIMELESS, 'S1_DES_{}_'.format(s)))
-
-    # calculation of statistics for VV and VH bands (ASC and DES)
-    stats_ASC = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
-                                     output_features=output_ASC_features,
-                                     map_functions=S1_stats,
-                                     percentiles=percentiles,
-                                     axis=0)
-    stats_DES = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
-                                     output_features=output_DES_features,
-                                     map_functions=S1_stats,
-                                     percentiles=percentiles,
-                                     axis=0)
-
-    # save S1 EOPatch
-    save_S1_ASC = SaveTask(eopatches_S1_ASC_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
-    save_S1_DES = SaveTask(eopatches_S1_DES_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
-
-    # move S1 statistics to S2 EOPatch
-    move_S1_ASC_to_S2 = MoveFeatureTask(FeatureType.DATA_TIMELESS)
-    move_S1_DES_to_S2 = MoveFeatureTask(FeatureType.DATA_TIMELESS)
-
-    # save updated EOPatch with S2 and S1 data
-    save_S1_S2 = SaveTask(path=eopatches_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
     """
     =================================================================================
@@ -501,49 +587,90 @@ if __name__ == '__main__':
     =================================================================================
     """
 
+    create_eopatch = CreateEOPatchTask()
     # New workflow with nodes, EONodes
-    node1 = EONode(create_eopatch, [], 'Create S2 EOPatch')
-    node2 = EONode(add_S2_data, [node1], 'Add S2 data')
-    node3 = EONode(S2_custom_CLM, [node2], 'Add your own cloud mask')
-    node4 = EONode(valid_mask, [node3], 'Add "valid data" mask')
-    node5 = EONode(save_S2, [node4], 'Save S2 EOPatch')
-    node6 = EONode(add_S1_ASC_data, [], 'Add S1_ASC data')
-    node7 = EONode(stats_ASC, [node6], 'Stats S1_ASC')
-    node8 = EONode(save_S1_ASC, [node7], 'Save S1_ASC EOPatch')
-    node9 = EONode(add_S1_DES_data, [], 'Add S1_DES data')
-    node10 = EONode(stats_DES, [node9], 'Stats S1_DES')
-    node11 = EONode(save_S1_DES, [node10], 'Save S1_DES EOPatch')
-    node12 = EONode(move_S1_ASC_to_S2, [node7, node4], 'Move S1_ASC stats to S2 EOPatch')
-    node13 = EONode(move_S1_DES_to_S2, [node9, node12], 'Move S1_DES stats to S2 EOPatch')
-    node14 = EONode(save_S1_S2, [node13], 'Save EOPatch S1 and S2')
+    nodes = []
 
+    # Sentinel 2 tasks:
+    if sentinel2:
+        node1 = EONode(create_eopatch, [], 'Create S2 EOPatch')
+        node2 = EONode(add_S2_data, [node1], 'Add S2 data')
+        node3 = EONode(S2_custom_CLM, [node2], 'Add your own cloud mask')
+        node4 = EONode(valid_mask, [node3], 'Add "valid data" mask')
+        node5 = EONode(save_S2, [node4], 'Save S2 EOPatch')
+        nodes_S2 = [node1, node2, node3, node4, node5]
+
+    # Sentinel 1 tasks:
+    if sentinel1:
+        node6 = EONode(add_S1_ASC_data, [], 'Add S1_ASC data')
+        node7 = EONode(stats_ASC, [node6], 'Stats S1_ASC')
+        node8 = EONode(save_S1_ASC, [node7], 'Save S1_ASC EOPatch')
+        node9 = EONode(add_S1_DES_data, [], 'Add S1_DES data')
+        node10 = EONode(stats_DES, [node9], 'Stats S1_DES')
+        node11 = EONode(save_S1_DES, [node10], 'Save S1_DES EOPatch')
+        nodes_S1 = [node6, node7, node8, node9, node10]
+
+    # Sentinel 1 and 2 join stats:
+    if sentinel1 and sentinel2:
+        node12 = EONode(move_S1_ASC_to_S2, [node7, node4], 'Move S1_ASC stats to S2 EOPatch')
+        node13 = EONode(move_S1_DES_to_S2, [node9, node12], 'Move S1_DES stats to S2 EOPatch')
+        node14 = EONode(save_S1_S2, [node13], 'Save EOPatch S1 and S2')
+        nodes_S1_S2 = [node11, node12, node13, node14]
+
+    """
+    OLD WAY:
     workflow = EOWorkflow([node1, node2, node3, node4, node5,  # S2 EOPatch
                            node6, node7, node8,                # S1_ASC EOPatch
                            node9, node10,                      # S1_DES EOPatch
                            node11, node12, node13, node14])    # Save EOPatch S1 and S2
+    """
+
+    workflow_nodes = []
+    if sentinel1: # S1 SAR
+        workflow_nodes = workflow_nodes + nodes_S1
+    if sentinel2: # S2 optical
+        workflow_nodes = workflow_nodes + nodes_S2
+        if sentinel1: # merge S1 abd S2
+            workflow_nodes = workflow_nodes + nodes_S1_S2
+
+    workflow = EOWorkflow(workflow_nodes)
 
 
     execution_args = []
     for bbox_id, bbox_coords in list_of_bboxes:
-        execution_args.append({
-            node1: {'bbox': BBox(bbox_coords, crs=crs), 'timestamps': list_of_dates},
-            node2: {'bbox': BBox(bbox_coords, crs=crs)},
-            node6: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
-            node9: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
-            node5: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            node8: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-            node14: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
-        })
+        dict_args = {}
 
-    # TODO: SHDeprecationWarning: The string representation of `BBox` will change to match its `repr` representation value = format % v
-    print('Now creating {} EOPatches...\n'.format(len(list_of_bboxes)))
-    executor = EOExecutor(workflow, execution_args, save_logs=True, logs_folder=reports_folder)
-    executor.run(workers=1, multiprocess=False)
-    executor.make_report()
+        if sentinel1: # S1 SAR
+            dict_sentinel1 = {
+                node8: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
+                node9: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
+                node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
+            }
+            dict_args = Merge(dict_args, dict_sentinel1)
 
-    print(f"Report was saved to location: {executor.get_report_path()}")
+        if sentinel2: # S2 optical
+            dict_sentinel2 = {
+                node1: {'bbox': BBox(bbox_coords, crs=crs), 'timestamps': list_of_dates},
+                node2: {'bbox': BBox(bbox_coords, crs=crs)},
+                node5: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
+            }
+            dict_args = Merge(dict_args, dict_sentinel2)
+
+            if sentinel1: # for merging S1 and S2
+                dict_merge = {
+                    node14: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
+                }
+                dict_args = Merge(dict_args, dict_merge)
+
+        execution_args.append(dict_args)
+
+    '''
+    ==================== end eoworlflow =======================================================
+    '''
+
+    execute_workflow(workflow, execution_args, reports_folder)
 
     time_end = datetime.datetime.now()
     time_duration = time_end - time_start
     print('\nExecution finished in: ', time_duration)
+
