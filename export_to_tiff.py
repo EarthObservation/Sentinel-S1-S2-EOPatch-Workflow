@@ -3,22 +3,22 @@
 import os
 import re
 import numpy as np
-from eolearn.io import ExportToTiff
-from eolearn.core import EOPatch, FeatureType, InitializeFeature
+from eolearn.io import ExportToTiffTask
+from eolearn.core import EOPatch, FeatureType, InitializeFeatureTask
 import datetime
 from tqdm import tqdm
 
 # folder with input eopatches
-eopatches_folder =  '' # folder as string
+eopatches_folder = './eopatches/'  # folder as string
 
 # Sentinel-1 and/or Sentinel-2 export
-selection = ['S2']  # select which satellite data to export (insert 'S1' and/or 'S2'; e.g. ['S1', 'S2']
+selection = ['S1', 'S2']  # select which satellite data to export (insert 'S1' and/or 'S2'; e.g. ['S1', 'S2']
 
 # output folder (subfolders 'S1/S2' will be auto-created)
 tiff_folder = './images/TIFF'  # local
 
 # parameters from S1 statistics
-years =  ['2017', '2018', '2019', '2017-2019'] # years as list of strings or span of years
+years =  ['2017', '2018'] #'2019', '2017-2019'] # years as list of strings or span of years
 orbits = ['ASC', 'DES']
 polarizations = ['VV', 'VH']
 stats = ['mean', 'median', 'std', 'var', 'p5', 'p95']
@@ -32,6 +32,8 @@ if __name__ == '__main__':
             tiff_subfolder = os.path.join(tiff_folder, s)
             if not os.path.isdir(tiff_subfolder):
                 os.makedirs(tiff_subfolder)
+    else:
+        raise NameError("'S1' and/or 'S2' expected in 'selection' variable, got {} instead".format(selection))
 
     """
     ====================================
@@ -39,6 +41,7 @@ if __name__ == '__main__':
     ====================================
     """
     if 'S1' in selection:
+        tiff_subfolder = os.path.join(tiff_folder, 'S1')
         # create a list of S1 statistics inside eopatch that will represent bands of output Tiff files
         list_of_stats = []
         for year in years:
@@ -57,7 +60,7 @@ if __name__ == '__main__':
             eopatch = EOPatch.load(os.path.join(eopatches_folder, 'eopatch_{}'.format(eopatch_id)), lazy_loading=True)
 
             # crete temporary feature for all statistics
-            new_feature = InitializeFeature((FeatureType.DATA_TIMELESS, 'S1_all_stats'),
+            new_feature = InitializeFeatureTask((FeatureType.DATA_TIMELESS, 'S1_all_stats'),
                                             shape=(24, 24, len(list_of_stats)),
                                             dtype=np.float64)
             new_feature.execute(eopatch)
@@ -70,7 +73,7 @@ if __name__ == '__main__':
                 eopatch.data_timeless['S1_all_stats'][..., sid] = eopatch.data_timeless[stat_dict['naming']][..., polar_id]
 
             # export new_feature to Tiff
-            export = ExportToTiff((FeatureType.DATA_TIMELESS, 'S1_all_stats'), folder=tiff_subfolder)
+            export = ExportToTiffTask((FeatureType.DATA_TIMELESS, 'S1_all_stats'),  folder=tiff_subfolder)
             export.execute(eopatch, filename='tile_{}.tiff'.format(eopatch_id))
 
     """
@@ -79,6 +82,7 @@ if __name__ == '__main__':
     ====================================
     """
     if 'S2' in selection:
+        tiff_subfolder = os.path.join(tiff_folder, 'S2')
         eopatches = os.listdir(eopatches_folder)
 
         # loop through eopatches
@@ -86,7 +90,7 @@ if __name__ == '__main__':
             eopatch = EOPatch.load(os.path.join(eopatches_folder, 'eopatch_{}'.format(eopatch_id)), lazy_loading=True)
 
             # crete temporary feature for all S2 bands (~12 bands + CLM)
-            new_feature = InitializeFeature((FeatureType.DATA, 'S2_bands_and_clm'),
+            new_feature = InitializeFeatureTask((FeatureType.DATA, 'S2_bands_and_clm'),
                                             shape=(eopatch.data['BANDS_S2'].shape[0],
                                                    eopatch.data['BANDS_S2'].shape[1],
                                                    eopatch.data['BANDS_S2'].shape[2],
@@ -106,11 +110,10 @@ if __name__ == '__main__':
                 eopatch.data['S2_bands_and_clm'][..., -1:] = eopatch.mask['CLM']
 
             # export new_feature to Tiff
-            export = ExportToTiff((FeatureType.DATA, 'S2_bands_and_clm'), folder=tiff_subfolder)
+            export = ExportToTiffTask((FeatureType.DATA, 'S2_bands_and_clm'), folder=tiff_subfolder)
             export.execute(eopatch, filename='tile_{}.tiff'.format(eopatch_id))
 
-    else:
-        raise NameError("'S1' and/or 'S2' expected in 'selection' variable, got {} instead".format(selection))
+
 
     time_end = datetime.datetime.now()
     time_duration = time_end - time_start

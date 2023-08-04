@@ -28,9 +28,7 @@
 # A. Draksler, nov. 2020
 # M. Somrak, apr. 2023
 
-import os
-import numpy as np
-import itertools
+
 
 # TODO: is deprecated; to replace
 # EODeprecationWarning: The `FeatureTypeSet` collections are deprecated.
@@ -38,6 +36,9 @@ import itertools
 # so you can use `lambda ftype: ftype.is_spatial()` instead of `FeatureTypeSet.SPATIAL_TYPES` in such cases.
 #   xml += var_to_xml(v, str(k), evaluate_full_value=eval_full_val)
 
+import os
+import numpy as np
+import time
 from eolearn.core import EOWorkflow, FeatureType, OverwritePermission, EOTask, SaveTask, \
     EOExecutor, CreateEOPatchTask, MoveFeatureTask, EONode, linearly_connect_tasks
 from eolearn.io import SentinelHubInputTask, SentinelHubEvalscriptTask
@@ -64,14 +65,11 @@ global move_S1_ASC_to_S2
 global move_S1_DES_to_S2
 global save_S1_S2
 
-
-
 global eopatches_S2_folder
 global eopatches_S1_ASC_folder
 global eopatches_S1_DES_folder
 global eopatches_folder
 global reports_folder
-
 
 '''
 ==================================================================================
@@ -110,6 +108,47 @@ def sentinel_hub_config(credentials_file) -> SHConfig():
 Processing parameters
 ==================================================================================
 '''
+
+def get_evalscript(band_name):
+    """
+    Evalscript for S1
+    """
+
+    evalscript = """
+            //VERSION=3
+
+            function setup() {
+                return {
+                    input: [{
+                        bands: ["VV", "VH"]
+                    }],
+                    output: [
+                        { id:"<band_name>", bands:2, sampleType: SampleType.FLOAT32 }
+                    ]
+                }
+            }
+
+            function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
+                outputMetadata.userData = { "norm_factor":  inputMetadata.normalizationFactor }
+            }
+
+            // apply "toDb" function on input bands
+             function evaluatePixel(samples) {
+              var VVdB = toDb(samples.VV)
+              var VHdB = toDb(samples.VH)
+              return [VVdB, VHdB]
+            }
+
+            // definition of "toDb" function
+            function toDb(linear) {
+              var log = 10 * Math.log(linear) / Math.LN10   // VV and VH linear to decibels
+              var val = Math.max(Math.min(log, 5), -30) 
+              return val
+            }    
+            """
+
+    return evalscript.replace('<band_name>', band_name)
+
 def process_S1(res,
                config,
                eopatches_S1_ASC_folder,
@@ -117,7 +156,7 @@ def process_S1(res,
                time_interval,
                S1_stats=['mean', 'median', 'std', 'var', 'percentile'],  # statistics to calculate;
                # options are ['mean', 'median', 'std', 'var', 'percentile'],
-               percentiles = [5, 95] # if you included 'percentile' is S1_stats, enter which percentiles to calculate
+               percentiles=[5, 95] # if you included 'percentile' is S1_stats, enter which percentiles to calculate
                ):
     """
     Process Sentinel 1 data
@@ -142,39 +181,6 @@ def process_S1(res,
     https://docs.sentinel-hub.com/api/latest/data/sentinel-1-grd/#units
     """
 
-    evalscript = """
-        //VERSION=3
-    
-        function setup() {
-            return {
-                input: [{
-                    bands: ["VV", "VH"]
-                }],
-                output: [
-                    { id:"custom", bands:2, sampleType: SampleType.FLOAT32 }
-                ]
-            }
-        }
-    
-        function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
-            outputMetadata.userData = { "norm_factor":  inputMetadata.normalizationFactor }
-        }
-    
-        // apply "toDb" function on input bands
-         function evaluatePixel(samples) {
-          var VVdB = toDb(samples.VV)
-          var VHdB = toDb(samples.VH)
-          return [VVdB, VHdB]
-        }
-    
-        // definition of "toDb" function
-        function toDb(linear) {
-          var log = 10 * Math.log(linear) / Math.LN10   // VV and VH linear to decibels
-          var val = Math.max(Math.min(log, 5), -30) 
-          return val
-        }    
-        """
-
     # TODO: Check "the features you provide in the task should correspond with
     #             the features defined in the output of the evalscript"
 
@@ -188,9 +194,9 @@ def process_S1(res,
     # S1 ASC data:
 
     add_S1_ASC_data = SentinelHubEvalscriptTask(
-        evalscript=evalscript,
+        evalscript=get_evalscript('BANDS_S1_ASC'),
         data_collection=DataCollection.SENTINEL1_IW_ASC,
-        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        features=(FeatureType.DATA, 'BANDS_S1_ASC'),
         resolution=res,
         time_difference=datetime.timedelta(minutes=120),
         config=config,
@@ -200,9 +206,9 @@ def process_S1(res,
     # S1 DES data:
 
     add_S1_DES_data = SentinelHubEvalscriptTask(
-        evalscript=evalscript,
+        evalscript=get_evalscript('BANDS_S1_DES'),
         data_collection=DataCollection.SENTINEL1_IW_DES,
-        features=(FeatureType.DATA, 'custom'),  # your self-defined output id
+        features=(FeatureType.DATA, 'BANDS_S1_DES'),
         resolution=res,
         time_difference=datetime.timedelta(minutes=120),
         config=config,
@@ -224,12 +230,12 @@ def process_S1(res,
             output_DES_features.append((FeatureType.DATA_TIMELESS, 'S1_DES_{}_'.format(s)))
 
     # calculation of statistics for VV and VH bands (ASC and DES)
-    stats_ASC = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
+    stats_ASC = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1_ASC'),
                                      output_features=output_ASC_features,
                                      map_functions=S1_stats,
                                      percentiles=percentiles,
                                      axis=0)
-    stats_DES = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1'),
+    stats_DES = MapFeatureYearlyTask(input_feature=(FeatureType.DATA, 'BANDS_S1_DES'),
                                      output_features=output_DES_features,
                                      map_functions=S1_stats,
                                      percentiles=percentiles,
@@ -244,8 +250,7 @@ def process_S2(res, # resolution
                eopatches_S2_folder, # output folder
                S2_cloudless_dates=True, # have you pre-selected cloudless dates with Sentinel-2 images for your area? If not, False
                selected_max_cc=0.8,  # maximum cloud cover on requested S2 data,
-               #S2_band_names=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12'],
-               S2_band_names='B01',
+               S2_band_names=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12'],
                calculate_S2_custom_CLM=True,  # If True, additional cloud mask (CLM) will be calculated. If False, Sentinel Hub CLM is used
                # S2 cloud mask calculation parameters (Only used if calculate_S2_custom_CLM = True)
                clm_res=10, # resolution for cloud mask calculation in meters
@@ -363,9 +368,8 @@ def execute_workflow(workflow, execution_args, reports_folder):
 
     print(f"Report was saved to location: {executor.get_report_path()}")
 
-# Python code to merge dict using a single
-# expression
 def Merge(dict1, dict2):
+    """ Merge entries from two dictionaries into one. """
     res = {**dict1, **dict2}
     return res
 
@@ -428,9 +432,8 @@ class MapFeatureYearlyTask(EOTask):
                     kwargs_dict[k] = v
                 self.kwargs_list.append(kwargs_dict)
 
-        # print(self.kwargs_list)
-
         self.functions = [getattr(np, i) for i in map_functions]
+
 
     def execute(self, eopatch):
         """
@@ -455,11 +458,21 @@ class MapFeatureYearlyTask(EOTask):
 
                 # add period suffix to feature name
                 output_feature_l = list(output_feature)
-                output_feature_l[1] = '{}{}-{}'.format(output_feature_l[0], yrs_uniq[0], yrs_uniq[-1])
+                # Old naming:
+                #output_feature_l[1] = '{}{}-{}'.format(output_feature_l[0], yrs_uniq[0], yrs_uniq[-1])
+                # New naming:
+                output_feature_l[1] = '{}-{}'.format(yrs_uniq[0], yrs_uniq[-1])
                 output_feature_id = tuple(output_feature_l)
 
                 # pass function to input feature
-                eopatch[output_feature_id] = fun(eopatch[input_features], **kwgs)
+                if 'BANDS_S1_ASC' in eopatch[FeatureType.DATA].keys():
+                    bands_s1 = eopatch[FeatureType.DATA, 'BANDS_S1_ASC']
+                elif 'BANDS_S1_DES' in eopatch[FeatureType.DATA].keys():
+                    bands_s1 = eopatch[FeatureType.DATA, 'BANDS_S1_DES']
+                else:
+                    bands_s1 = None
+                eopatch[output_feature_id] = fun(bands_s1, **kwgs)
+                # eopatch[output_feature_id] = fun(eopatch[FeatureType.DATA], **kwgs)
 
                 for yr_suffix, [start_idx, end_idx] in zip(yrs_uniq, yrs_start_end):
 
@@ -469,7 +482,8 @@ class MapFeatureYearlyTask(EOTask):
                     output_feature_y_id = tuple(output_feature_y_l)
 
                     # pass function to subset of input feature
-                    eopatch[output_feature_y_id] = fun(eopatch[input_features][start_idx:end_idx + 1], **kwgs)
+                    eopatch[output_feature_y_id] = fun(bands_s1[start_idx:end_idx + 1], **kwgs)
+                    # eopatch[output_feature_y_id] = fun(eopatch[FeatureType.DATA][start_idx:end_idx + 1], **kwgs)
 
         return eopatch
 
@@ -490,8 +504,8 @@ class SentinelHubValidData:
         self.cloud_mask = cloud_mask
 
     def __call__(self, eopatch):
-        return np.logical_and(eopatch.mask[self.data_mask].astype(np.bool),  # 'IS_DATA'
-                              np.logical_not(eopatch.mask[self.cloud_mask].astype(np.bool)))   # 'CLM' or 'CLM_10m'
+        return np.logical_and(eopatch.mask[self.data_mask].astype(bool),  # 'IS_DATA'
+               np.logical_not(eopatch.mask[self.cloud_mask].astype(bool)))   # 'CLM' or 'CLM_10m'
 
 class AddValidDataMaskTask(EOTask):
     """EOTask for adding custom mask array used to filter reflectances data
@@ -517,8 +531,7 @@ class AddValidDataMaskTask(EOTask):
         :param eopatch: Input `eopatch` instance
         :return: The same `eopatch` instance with a `mask.valid_data` array computed according to the predicate
         """
-        feature_type, feature_name = next(self.valid_data_feature())
-        eopatch[feature_type][feature_name] = self.predicate(eopatch)
+        eopatch[self.valid_data_feature] = self.predicate(eopatch)
         return eopatch
 
 
@@ -561,7 +574,7 @@ if __name__ == '__main__':
     crs = CRS.UTM_16N  # CRS of bboxes - for Maya sites in Chactun: EPSG:32616 - WGS 84 / UTM zone 16N
     res = 10  # resolution of EOPatches in meters
 
-    sentinel1 = False
+    sentinel1 = True
     sentinel2 = True
 
     # request for Sentinel 2 data
@@ -572,7 +585,7 @@ if __name__ == '__main__':
     if sentinel1:
         # S1 processing parameters
         # TODO: Temporarily limit time interval to shorter period -> change back!
-        time_interval = ['2017-01-01', '2017-01-31']
+        time_interval = ['2017-01-01', '2018-12-31']
         # time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
         process_S1(res, config, eopatches_S1_ASC_folder, eopatches_S1_DES_folder, time_interval)
 
@@ -617,14 +630,8 @@ if __name__ == '__main__':
         node14 = EONode(save_S1_S2, [node13], 'Save EOPatch S1 and S2')
         nodes_S1_S2 = [node11, node12, node13, node14]
 
-    """
-    OLD WAY:
-    workflow = EOWorkflow([node1, node2, node3, node4, node5,  # S2 EOPatch
-                           node6, node7, node8,                # S1_ASC EOPatch
-                           node9, node10,                      # S1_DES EOPatch
-                           node11, node12, node13, node14])    # Save EOPatch S1 and S2
-    """
 
+    # Workflow:
     workflow_nodes = []
     if sentinel1: # S1 SAR
         workflow_nodes = workflow_nodes + nodes_S1
@@ -635,13 +642,14 @@ if __name__ == '__main__':
 
     workflow = EOWorkflow(workflow_nodes)
 
-
+    # Execution arguments:
     execution_args = []
     for bbox_id, bbox_coords in list_of_bboxes:
         dict_args = {}
 
         if sentinel1: # S1 SAR
             dict_sentinel1 = {
+                node6: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
                 node8: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)},
                 node9: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
                 node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}

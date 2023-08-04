@@ -1,0 +1,5 @@
+eopatches_S2_folder = './eopatches_S2/'
+eopatches_S1_ASC_folder = './eopatches_S1/ASC/'
+eopatches_S1_DES_folder = './eopatches_S1/DES/'
+eopatches_folder = './eopatches/'
+reports_folder = './reports/'
