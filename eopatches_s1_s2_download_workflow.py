@@ -28,14 +28,6 @@
 # A. Draksler, nov. 2020
 # M. Somrak, apr. 2023
 
-
-
-# TODO: is deprecated; to replace
-# EODeprecationWarning: The `FeatureTypeSet` collections are deprecated.
-# The argument `allowed_feature_types` of feature parsers can now be a callable,
-# so you can use `lambda ftype: ftype.is_spatial()` instead of `FeatureTypeSet.SPATIAL_TYPES` in such cases.
-#   xml += var_to_xml(v, str(k), evaluate_full_value=eval_full_val)
-
 import os
 import numpy as np
 import time
@@ -71,6 +63,7 @@ global eopatches_S1_DES_folder
 global eopatches_folder
 global reports_folder
 
+
 '''
 ==================================================================================
 Configuration and processing parameters
@@ -101,6 +94,7 @@ def sentinel_hub_config(credentials_file) -> SHConfig():
 
     print("Instance ID: " + config.instance_id)
     return config
+
 
 
 '''
@@ -181,9 +175,6 @@ def process_S1(res,
     https://docs.sentinel-hub.com/api/latest/data/sentinel-1-grd/#units
     """
 
-    # TODO: Check "the features you provide in the task should correspond with
-    #             the features defined in the output of the evalscript"
-
     global add_S1_ASC_data
     global add_S1_DES_data
     global stats_ASC
@@ -242,8 +233,10 @@ def process_S1(res,
                                      axis=0)
 
     # save S1 EOPatch
-    save_S1_ASC = SaveTask(eopatches_S1_ASC_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
-    save_S1_DES = SaveTask(eopatches_S1_DES_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    save_S1_ASC = RetrySaveTask(eopatches_S1_ASC_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    save_S1_DES = RetrySaveTask(eopatches_S1_DES_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    return
+
 
 def process_S2(res, # resolution
                S2_cloudless_dates_file,
@@ -300,7 +293,7 @@ def process_S2(res, # resolution
                                   average_over=clm_average_over,
                                   dilation_size=clm_dilation_size)
 
-    add_clm = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS'),
+    add_clm = CloudMaskTask(data_feature=(FeatureType.DATA, 'BANDS_S2'),
                             all_bands=True,
                             processing_resolution=160,
                             mono_features=('CLP', 'CLM'),
@@ -308,19 +301,14 @@ def process_S2(res, # resolution
                             average_over=16,
                             dilation_size=8)
 
-
-    # -----ORIGINAL-----
     # add "valid data" feature
     CLM = 'CLM_{}m'.format(clm_res) if calculate_S2_custom_CLM else 'CLM'
     # VALIDITY MASK
-    # Validate pixels using SentinelHub's cloud detection mask and region of acquisition??
-    # Before it was AddValidDataMaskTask, then was renamed to SentinelHubValidDataTask
-    valid_mask = AddValidDataMaskTask(SentinelHubValidData(data_mask='IS_DATA',  # name of 'dataMask' feature
-                                                           cloud_mask=CLM),  # name of 'cloud mask' feature
-                                      valid_data_feature=(FeatureType.MASK, 'IS_VALID'))  # name of output mask
+    # Validate pixels using SentinelHub's cloud detection mask and region of acquisition
+    valid_mask = SentinelHubValidDataTask((FeatureType.MASK, "IS_VALID"), cloud_mask=CLM, data_mask='IS_DATA')
 
     # save S2 EOPatch
-    save_S2 = SaveTask(eopatches_S2_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    save_S2 = RetrySaveTask(eopatches_S2_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
 def merge_S1_S2():
     global move_S1_ASC_to_S2
@@ -332,7 +320,7 @@ def merge_S1_S2():
     move_S1_DES_to_S2 = MoveFeatureTask(FeatureType.DATA_TIMELESS)
 
     # save updated EOPatch with S2 and S1 data
-    save_S1_S2 = SaveTask(path=eopatches_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
+    save_S1_S2 = RetrySaveTask(path=eopatches_folder, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
 def set_output_locations(output_locations_file):
     global eopatches_S2_folder
@@ -368,7 +356,7 @@ def execute_workflow(workflow, execution_args, reports_folder):
 
     print(f"Report was saved to location: {executor.get_report_path()}")
 
-def Merge(dict1, dict2):
+def merge(dict1, dict2):
     """ Merge entries from two dictionaries into one. """
     res = {**dict1, **dict2}
     return res
@@ -487,52 +475,43 @@ class MapFeatureYearlyTask(EOTask):
 
         return eopatch
 
-class SentinelHubValidData:
-    """
-    Combine Sen2Cor's classification map with `IS_DATA` to define a `VALID_DATA` mask
-    Cloud mask is assumed to be found in eopatch.mask['CLM']
-    """
-    def __init__(self, data_mask, cloud_mask):
-        """
 
-        :param data_mask: name of EOPatch FeatureType.MASK with 'IS_DATA' information
-        :type data_mask: string
-        :param cloud_mask: name of EOPatch FeatureType.MASK with 'cloud mask' data
-        :type cloud_mask:  string
-        """
-        self.data_mask = data_mask
+class SentinelHubValidDataTask(EOTask):
+    """
+    Combine Sen2Cor's classification map with `IS_DATA` to define a `VALID_DATA_SH` mask
+    The SentinelHub's cloud mask is asumed to be found in eopatch.mask['CLM']
+    """
+
+    def __init__(self, output_feature, cloud_mask='CLM', data_mask='IS_DATA'):
+        self.output_feature = output_feature
         self.cloud_mask = cloud_mask
-
-    def __call__(self, eopatch):
-        return np.logical_and(eopatch.mask[self.data_mask].astype(bool),  # 'IS_DATA'
-               np.logical_not(eopatch.mask[self.cloud_mask].astype(bool)))   # 'CLM' or 'CLM_10m'
-
-class AddValidDataMaskTask(EOTask):
-    """EOTask for adding custom mask array used to filter reflectances data
-    This task allows the user to specify the criteria used to generate a valid data mask, which can be used to
-    filter the data stored in the `FeatureType.DATA`
-    """
-
-    def __init__(self, predicate, valid_data_feature=(FeatureType.MASK, "VALID_DATA")):
-        """Constructor of the class requires a predicate defining the function used to generate the valid data mask. A
-        predicate is a function that returns the truth value of some condition.
-        An example predicate could be an `and` operator between a cloud mask and a snow mask.
-        :param predicate: Function used to generate a `valid_data` mask
-        :type predicate: func
-        :param valid_data_feature: Feature which will store valid data mask
-        :type valid_data_feature: str
-        """
-        self.predicate = predicate
-        self.valid_data_feature = self.parse_feature(valid_data_feature)
-        return #tmp
+        self.data_mask = data_mask
 
     def execute(self, eopatch):
-        """Execute predicate on input eopatch
-        :param eopatch: Input `eopatch` instance
-        :return: The same `eopatch` instance with a `mask.valid_data` array computed according to the predicate
-        """
-        eopatch[self.valid_data_feature] = self.predicate(eopatch)
+        # Ensure both masks are boolean
+        data_mask_bool = eopatch.mask[self.data_mask].astype(bool)
+        cloud_mask_bool = eopatch.mask[self.cloud_mask].astype(bool)
+
+        # Combine masks: valid where data is present and no clouds
+        eopatch[self.output_feature] = data_mask_bool & (~cloud_mask_bool)
         return eopatch
+
+
+class RetrySaveTask(SaveTask):
+    def __init__(self, path, retries=100, delay=2, **kwargs):
+        super().__init__(path, **kwargs)
+        self.retries = retries
+        self.delay = delay
+
+    def execute(self, eopatch, **kwargs):
+        for i in range(self.retries):
+            try:
+                return super().execute(eopatch, **kwargs)
+            except OSError as e:
+                if "[WinError 6]" in str(e) and i < self.retries - 1:  # Handle is invalid
+                    time.sleep(self.delay) # retry in case of concurrent access
+                else:
+                    raise  # Re-raise the last exception
 
 
 '''
@@ -560,9 +539,6 @@ if __name__ == '__main__':
             coords = (xmin, ymin, xmax, ymax)
             list_of_bboxes.append([id, coords])
 
-    # TODO: temporarily only use five samples, then change back
-    list_of_bboxes = list_of_bboxes[:5]
-
     """
     ===============================================================
     EOTasks for creating EOPatches, adding S2 and S1 data, S2 and S1 processing,
@@ -584,7 +560,6 @@ if __name__ == '__main__':
     # request for Sentinel) 1 data
     if sentinel1:
         # S1 processing parameters
-        # TODO: Temporarily limit time interval to shorter period -> change back!
         time_interval = ['2017-01-01', '2018-12-31']
         # time_interval = ['2017-01-01', '2020-12-31']  # time interval for S1 in format ['YYYY-MM-DD', 'YYYY-MM-DD']
         process_S1(res, config, eopatches_S1_ASC_folder, eopatches_S1_DES_folder, time_interval)
@@ -626,7 +601,7 @@ if __name__ == '__main__':
     # Sentinel 1 and 2 join stats:
     if sentinel1 and sentinel2:
         node12 = EONode(move_S1_ASC_to_S2, [node7, node4], 'Move S1_ASC stats to S2 EOPatch')
-        node13 = EONode(move_S1_DES_to_S2, [node9, node12], 'Move S1_DES stats to S2 EOPatch')
+        node13 = EONode(move_S1_DES_to_S2, [node10, node12], 'Move S1_DES stats to S2 EOPatch')
         node14 = EONode(save_S1_S2, [node13], 'Save EOPatch S1 and S2')
         nodes_S1_S2 = [node11, node12, node13, node14]
 
@@ -654,7 +629,7 @@ if __name__ == '__main__':
                 node9: {'bbox': BBox(bbox_coords, crs=crs), 'time_interval': time_interval},
                 node11: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
             }
-            dict_args = Merge(dict_args, dict_sentinel1)
+            dict_args = merge(dict_args, dict_sentinel1)
 
         if sentinel2: # S2 optical
             dict_sentinel2 = {
@@ -662,13 +637,13 @@ if __name__ == '__main__':
                 node2: {'bbox': BBox(bbox_coords, crs=crs)},
                 node5: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
             }
-            dict_args = Merge(dict_args, dict_sentinel2)
+            dict_args = merge(dict_args, dict_sentinel2)
 
             if sentinel1: # for merging S1 and S2
                 dict_merge = {
                     node14: {'eopatch_folder': 'eopatch_{}'.format(bbox_id)}
                 }
-                dict_args = Merge(dict_args, dict_merge)
+                dict_args = merge(dict_args, dict_merge)
 
         execution_args.append(dict_args)
 

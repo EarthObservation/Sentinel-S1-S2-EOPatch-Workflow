@@ -23,6 +23,16 @@ orbits = ['ASC', 'DES']
 polarizations = ['VV', 'VH']
 stats = ['mean', 'median', 'std', 'var', 'p5', 'p95']
 
+
+def get_tiff_subfolder(tiff_folder, inner_folder):
+    """
+    Join folderpath and subfolder name into a string;
+    This format of string is suitable for ExportToTiffTask arg 'folder' for correctly exporting
+    """
+    tiff_subfolder = tiff_folder[2:] if tiff_folder.startswith('./') else tiff_folder
+    tiff_subfolder = f'{tiff_subfolder}/{inner_folder}'
+    return tiff_subfolder
+
 if __name__ == '__main__':
     time_start = datetime.datetime.now()
 
@@ -41,7 +51,8 @@ if __name__ == '__main__':
     ====================================
     """
     if 'S1' in selection:
-        tiff_subfolder = os.path.join(tiff_folder, 'S1')
+        tiff_subfolder = get_tiff_subfolder(tiff_folder, 'S1')
+
         # create a list of S1 statistics inside eopatch that will represent bands of output Tiff files
         list_of_stats = []
         for year in years:
@@ -82,7 +93,7 @@ if __name__ == '__main__':
     ====================================
     """
     if 'S2' in selection:
-        tiff_subfolder = os.path.join(tiff_folder, 'S2')
+        tiff_subfolder = get_tiff_subfolder(tiff_folder, 'S2')
         eopatches = os.listdir(eopatches_folder)
 
         # loop through eopatches
