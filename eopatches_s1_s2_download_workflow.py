@@ -262,7 +262,7 @@ def process_S2(res, # resolution
     global save_S2
     global list_of_dates
 
-    data_collection_S2 = DataCollection.SENTINEL2_L2A
+    data_collection_S2 = DataCollection.SENTINEL2_L1C
 
     # import dates for S2 imagery
     list_of_dates = []
