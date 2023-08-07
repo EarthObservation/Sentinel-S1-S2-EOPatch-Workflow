@@ -524,7 +524,7 @@ if __name__ == '__main__':
     time_start = datetime.datetime.now()
 
     S2_cloudless_dates_file = './input_files/valid_dates_S2.txt'  # file with list of S-2 cloudless dates (optional)
-    bboxes_file = './input_files/list_of_bboxes.txt'  # file with bounding boxes
+    bboxes_file = './input_files/list_of_bboxes_sample.txt'  # file with bounding boxes
 
     credentials_file = "./user_credentials.txt"
     config = sentinel_hub_config(credentials_file)
